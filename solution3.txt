@@ -1,0 +1,100 @@
+CREATE QUERY Solution3(String roundStage, int k, String sector) FOR GRAPH CrunchBasePre_2013 { 
+  /*
+	DISCLAIMER: Data is from Crunchbase 2013 Snapshot under the Creative Commons Attribution License [CC-BY].
+
+  This query is to help people find the top k promising startups that have the most number of "successful" employees within a round cutoff and sector filtering.
+E.g. If top k is 3, the round cutoff is "c", and the industry sector is "software", we find the top 3 startups which are before the "d" round stage, and have the biggest count of successful employees work for them. Here, "successful" is defined as those people who have worked for any startup during the time it went to IPO.
+
+  Brief steps:
+  1. find all companies has IPOed.
+  2. find successful employees.
+  3. find startups who has the most number of successful employees.
+  4. select startups based on the input round cutoff and category sector.
+  
+  Sample input
+        1.  roundStage: angel   k: 5     sector: mobile
+        2.  roundStage: c       k: 3     sector: games_video
+  */
+  
+
+    //declare tuple to combine the information, with relevant company and it's IPO/acquired numbers
+    typedef tuple<STRING name, INT counts> scoreResults;
+    //declare heap to keep the top k companies
+    HeapAccum<scoreResults>(k,counts desc) @@topScoreResults;
+
+    //declare set to store vertex and edge
+    SetAccum<String> @@res; 
+  
+    SetAccum<String> @@roundSet;
+    SetAccum<vertex> @@successfulEmployee;
+
+   
+    SumAccum<int> @counts;
+    
+    //declare variable to tag the vertex
+    MinAccum<datetime> @successTime;
+    AndAccum @selectCom = true;
+     
+
+    ListAccum<vertex<company>> @companyList;
+    //declare list for checking roundStage
+    ListAccum<String> @@times;
+    int index = 8;
+  
+    DATETIME none;
+    none = to_datetime("1970-01-01 00:00:00");
+
+    @@times = ["angel","seed","a","b","c","d","e","f","g"];
+    //get the roundStage index
+    foreach i in range[0,@@times.size()-1] do
+        if(roundStage == @@times.get(i)) then index = i;
+        else if(i > index) then @@roundSet += @@times.get(i);
+        end;
+    end;
+
+    IPOs = {IPO.*};
+    companies = {company.*};
+  
+    //1.find all companies has IPOed.
+    publicCompany = select c from IPOs:i-(company_ipo:e)->company:c
+                    where datetime_diff(i.public_at,to_datetime("1970-01-01 00:00:00")) != 0
+                    accum c.@successTime = i.public_at;
+  
+   //print publicCompany;
+   //2.find successful employees.
+    emp = select p
+            from publicCompany:c-(work_for_company:e)-person:p
+            where datetime_diff(e.start_at,to_datetime("1970-01-01 00:00:00")) != 0 
+                  and datetime_diff(e.end_at,to_datetime("1970-01-01 00:00:00")) != 0 
+                  and datetime_diff(e.start_at,c.@successTime) < 0
+            ACCUM @@successfulEmployee += p;
+  
+    //print @@successfulEmployee ;
+    //3. find startups who has the most number of successful employees.
+    //4. select startups based on the input round cutoff and category sector.
+    startUp = companies MINUS publicCompany;
+
+  
+    filteredStartUp = select c
+                from startUp:c-(company_funding_rounds:e)->funding_rounds:f
+                accum
+                    case when @@roundSet.contains(f.funding_round_code) then c.@selectCom += false end;
+  
+     B3 = select c
+            from filteredStartUp:c-(work_for_company:e)-person:p
+            where c.status != "acquired" and c.status != "ipo"
+                    and c.@selectCom == true
+                    and lower(trim(c.category_code)) == lower(trim(sector))
+                    and datetime_diff(e.start_at,to_datetime("1970-01-01 00:00:00")) != 0
+                    and datetime_diff(e.end_at,to_datetime("1970-01-01 00:00:00")) == 0
+                    and @@successfulEmployee.contains(p)
+            ACCUM c.@counts += 1
+            POST-ACCUM @@topScoreResults += scoreResults(c.name, c.@counts);
+  
+     foreach item in @@topScoreResults do
+            @@res += item.name;
+     end;
+
+  
+     PRINT @@res;
+  }

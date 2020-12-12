@@ -1,0 +1,74 @@
+CREATE QUERY FindCompanies() FOR GRAPH CrunchBasePre_2013 syntax v2 { 
+     /*
+ DISCLAIMER: Data is from Crunchbase 2013 Snapshot under the Creative Commons Attribution License [CC-BY].
+
+ Find those companies (say the company name is ABC) that was acquired by a public company (IPOed, say the company name is XYZ), and the company ABC has investors who are employees of the public company XYZ. Note: an investor can invest a company directly via the "invested_by_person" edge. Or, indirectly via the "investment_from_person" edge, and the edge connect to a fund which invest in the targeted company.
+
+ Step:
+    (1) find public(IPOed) companies
+    (2) select person who work for ipoed company
+    (3) select companies acquired by IPOed companies;
+    (4) find companies in step(2) that have investors (invested_by_person/investment_from_person) in step (3)
+*/
+    SetAccum<String> @@res;
+    SetAccum<vertex> @@result;
+    AndAccum @ipoed = false;
+    // the acquired company by each ipoed company
+  
+    MapAccum<vertex, SetAccum<vertex>> @@LtoS;
+    MapAccum<vertex, SetAccum<vertex>> @@pworkfor;
+    MapAccum<vertex, vertex> @@foundfor;
+    DATETIME none;
+    none = to_datetime("1970-01-01 00:00:00");
+  
+    IPOs = {IPO.*};
+    Persons = {person.*};
+    //1.find public(IPOed) companies
+    //company <- IPO
+    publicCompany = select c
+            from IPOs:i-(company_ipo:e)-company:c
+            where datetime_diff(i.public_at,none) != 0
+            accum c.@ipoed = true;
+  
+    //2.select person who work for ipoed company
+    pWorkForPC  = select p from Persons:p -(work_for_company: e) - publicCompany:c 
+           where datetime_diff(e.start_at,none) != 0 and datetime_diff(e.end_at,none) == 0 
+           accum @@pworkfor += (p -> c);
+  
+    //3.select companies acquired by ipoed companies;
+    // a company XYZ can acquire n companies 1:n 
+    // but a company ABC can only acquire by 1 company;
+     A = select c from publicCompany:s - (acquire>:e) - company:c
+          accum @@LtoS += (s ->c);
+
+    //4. find companies invested by WorkForPC
+    //director
+     investor1 = select c from pWorkForPC: p - (invested_by_person:e) - A:c 
+           accum 
+             foreach i in @@pworkfor.get(p) DO
+               if(@@LtoS.get(i).contains(c)) then
+                   @@res += c.name
+                END
+            end;      
+ 
+     //indirector
+     //funding_rounds to company is a 1:1 relationship
+     fundtoC = select c from funding_rounds:f - (company_funding_rounds:e) - A:c
+           accum @@foundfor += (f -> c);
+  
+  
+    // person to funding_rounds is a 1 :n relationship
+     investor2 = select f from pWorkForPC: p - (investment_from_person: e) - funding_rounds:f         
+          accum 
+             foreach i in @@pworkfor.get(p) DO
+               if(@@LtoS.get(i).contains(@@foundfor.get(f))) then
+                   @@result += @@foundfor.get(f)
+                END
+            end;      
+ 
+      ABC = {@@result};
+      result = select p from ABC:p
+           accum  @@res += p.name;
+           
+   print @@res; 
+}
